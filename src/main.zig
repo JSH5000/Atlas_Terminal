@@ -44,14 +44,13 @@ pub fn main() !void {
                 if (input_len < input_buffer.len - 1) {
                     input_buffer[input_len] = char;
                     input_len += 1;
+                    input_buffer[input_len] = 0;
                 }
             }
         } else if (event.type == c.SDL_EVENT_KEY_DOWN) {
             // Debug print the key pressed
             const keycode = c.SDL_GetKeyFromScancode(event.key.scancode, c.SDL_KMOD_NONE, true);
             if (keycode == c.SDLK_RETURN or keycode == c.SDLK_KP_ENTER) {
-                appendOutputToTerminal(input_buffer[0..input_len]); // echo command
-
                 input_buffer[input_len] = 0;
 
                 var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -64,13 +63,14 @@ pub fn main() !void {
                     const cmd = tokens[0];
                     const args = tokens[1..];
 
-                    if (try handleInternalCommand(cmd, args, allocator)) |output| {
+                    if (try handleInternalCommand(cmd, args)) |output| {
                         appendOutputToTerminal(output); // add output to terminal
                     }
                 }
 
-                @memset(input_buffer[0..], 0); // ✅ clear entire buffer
+                // Clear the input buffer
                 input_len = 0;
+                @memset(input_buffer[0..], 0);
             } else if (keycode == c.SDLK_BACKSPACE) {
                 if (input_len > 0) {
                     input_len -= 1;
@@ -111,25 +111,36 @@ fn parseCommand(input: []const u8, allocator: *const std.mem.Allocator) ![][]con
     return tokens.toOwnedSlice();
 }
 
-fn handleInternalCommand(cmd: []const u8, args: [][]const u8, allocator: *const std.mem.Allocator) !?[]const u8 {
+fn handleInternalCommand(cmd: []const u8, args: [][]const u8) !?[]const u8 {
     if (std.mem.eql(u8, cmd, "clear")) {
-        terminal_line_count = 0;
-        return null; // No output needed
+        resetTerminal();
+        return null;
     }
 
     if (std.mem.eql(u8, cmd, "echo")) {
-        var buffer = std.ArrayList(u8).init(allocator.*);
-        defer buffer.deinit();
+        // Build directly into a fixed buffer
+        var static_buffer: [MaxLineLength]u8 = undefined;
+        var index: usize = 0;
 
         for (args, 0..) |arg, i| {
-            try buffer.appendSlice(arg);
-            if (i != args.len - 1) {
-                try buffer.append(' ');
+            const arg_len = arg.len;
+            if (index + arg_len >= MaxLineLength) break;
+
+            std.mem.copyForwards(u8, static_buffer[index..][0..arg_len], arg);
+            index += arg_len;
+
+            if (i != args.len - 1 and index + 1 < MaxLineLength) {
+                static_buffer[index] = ' ';
+                index += 1;
             }
         }
-        try buffer.append('\n');
-        const owned = try buffer.toOwnedSlice();
-        return @as(?[]const u8, owned);
+
+        if (index < MaxLineLength - 1) {
+            static_buffer[index] = '\n';
+            index += 1;
+        }
+
+        return static_buffer[0..index];
     }
 
     return null;
@@ -150,4 +161,12 @@ fn appendOutputToTerminal(output: []const u8) void {
     std.mem.copyForwards(u8, dest[0..length], output[0..length]);
     terminal_line_lengths[terminal_line_count] = length;
     terminal_line_count += 1;
+}
+
+fn resetTerminal() void {
+    terminal_line_count = 0;
+    for (0..MaxLines) |i| {
+        terminal_lines[i] = undefined;
+        terminal_line_lengths[i] = 0;
+    }
 }
